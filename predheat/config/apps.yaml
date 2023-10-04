@@ -1,0 +1,33 @@
+---
+pred_heat:
+  module: predheat
+  class: PredHeat
+  
+  # Sets the prefix for all created entities in HA - only change if you want to run more than once instance
+  prefix: predheat
+
+  # XXX: This is a configuration template, delete this line once you edit your configuration
+  # template: True
+
+  # Timezone to work in
+  timezone: Europe/London
+
+  # History information max days
+  max_days_previous : 14
+
+  # External temperature sensor
+  external_temperature: "sensor.external_temperature"
+
+  # Internal temperature sensor(s)
+  internal_temperature:
+    - "sensor.living_room_temperature"
+
+  # Sensor with history that monitors the thermostat setting in the house
+  target_temperature: "sensor.living_room_target"
+
+  # Past energy consumption of heating in KWh
+  heating_energy: "sensor.boiler_nrgheat"
+
+  # Heating is turned on history
+  heating_active: "binary_sensor.boiler_heatingactive"
+
