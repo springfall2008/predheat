@@ -19,11 +19,90 @@ TIME_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 TIME_FORMAT_SECONDS = "%Y-%m-%dT%H:%M:%S.%f%z"
 TIME_FORMAT_OCTOPUS = "%Y-%m-%d %H:%M:%S%z"
 MAX_INCREMENT = 100
+PREDICT_STEP = 5
 
 CONFIG_ITEMS = [
-    {'name' : 'version',   'friendly_name' : 'Predheat Core Update',  'type' : 'update', 'title' : 'Predheat', 'installed_version' : THIS_VERSION, 'release_url' : 'https://github.com/springfall2008/predheat/releases/tag/' + THIS_VERSION, 'entity_picture' : 'https://user-images.githubusercontent.com/48591903/249456079-e98a0720-d2cf-4b71-94ab-97fe09b3cee1.png'},
-    {'name' : 'test',      'friendly_name' : 'test', 'type' : 'switch'},
+    {'name' : 'version',           'friendly_name' : 'Predheat Core Update',  'type' : 'update', 'title' : 'Predheat', 'installed_version' : THIS_VERSION, 'release_url' : 'https://github.com/springfall2008/predheat/releases/tag/' + THIS_VERSION, 'entity_picture' : 'https://user-images.githubusercontent.com/48591903/249456079-e98a0720-d2cf-4b71-94ab-97fe09b3cee1.png'},
+    {'name' : 'test',              'friendly_name' : 'test', 'type' : 'switch'},
+    {'name' : 'next_volume_temp',  'friendly_name' : 'Volume Temperature Next', 'type' : 'input_number', 'min' : -20,   'max' : 40,     'step' : 0.1,  'unit' : 'c'},
 ]
+
+"""
+Notes:
+
+A BTU – or British Thermal Unit – is an approximation of the amount of energy required to heat 1lb (one pound) of by 1 degree Farenheit, and is roughly equal to 1.055 KJoules
+
+Watts are defined as 1 Watt = 1 Joule per second (1W = 1 J/s) which means that 1 kW = 1000 J/s.
+
+Calculate the kilowatt-hours (kWh) required to heat the water using the following formula: Pt = (4.2 × L × T ) ÷ 3600. 
+Pt is the power used to heat the water, in kWh. L is the number of liters of water that is being heated and T is the difference in temperature from what you started with, listed in degrees Celsius
+
+So, if the average water temperature across the radiator is 70 degrees C, the Delta T is 50 degrees C. A radiator’s power output is most often expressed in watts.
+You can easily convert between Delta 50, 60 and 70, for example: If a radiator has a heat output of 5000 BTU at ΔT=60, to find the heat output at ΔT=50, you simply multiply the BTU by 0.789. 
+If you have a radiator with a heat output of 5000 BTU at ΔT=60, to find the heat output at ΔT=70, you multiply the BTU by 1.223. 
+If you have a radiator with a heat output of 5000 BTU at ΔT=50, to find the heat output at ΔT=60, you need to multiply the BTU by 1.264.
+
+
+FLOMASTA TYPE 22 DOUBLE-PANEL DOUBLE CONVECTOR RADIATOR 600MM X 1200MM WHITE 6998BTU 2051W Delta T50°C - 7.16L
+600 x 1000mm DOUBLE-PANEL - 5832BTU 1709W
+500 x 900mm DOUBLE-PANEL  - 4519BTU 1324W
+
+https://www.tlc-direct.co.uk/Technical/DataSheets/Quinn_Barlo/BarloPanelOutputsSpecs-Feb-2102.pdf
+
+Delta correction factors (see below)
+
+Steel panel radiators = 11 litres / kW
+
+Key functions:
+
+1. Table of raditors with BTUs (or maybe have size/type and calculate this) and capacity. 
+2. Work out water content of heating system
+3. Ability to set flow temperature either fixed or to sensor
+4. User to enter house heat loss figure
+   - Need a way to scan past data and calibrate this
+   - Look at energy output of heating vs degrees C inside to compute heat loss
+5. Take weather data from following days to predict forward outside temperature
+6. Predict forward target heating temperature
+7. Compute when heating will run, work out water temperature and heat output (and thus energy use)
+   - Account for heating efficency COP
+   - Maybe use table of COP vs outside temperature to help predict this for heat pumps?
+8. Predict room temperatures
+9. Sensor for heating predicted energy to link to Predbat if electric
+
+"""
+
+DELTA_CORRECTION = {
+    75 : 1.69,
+    70 : 1.55,
+    65 : 1.41,
+    60 : 1.27,
+    55 : 1.13,
+    50 : 1,
+    45 : 0.87,
+    40 : 0.75,
+    35 : 0.63,
+    30 : 0.51,
+    25 : 0.41,
+    20 : 0.3,
+    15 : 0.21,
+    10 : 0.12,
+    5  : 0.05,
+    0  : 0.00
+}
+
+GAS_EFFICIENCY = {
+    0  : 0.995,
+    10 : 0.995,
+    20 : 0.99,
+    30 : 0.98,
+    40 : 0.95,
+    50 : 0.90,
+    60 : 0.88,
+    70 : 0.87,
+    80 : 0.86,
+    90 : 0.85,
+    100 : 0.84    
+}
 
 class PredHeat(hass.Hass):
     """ 
@@ -154,7 +233,8 @@ class PredHeat(hass.Hass):
         self.prediction_started = False
         self.update_pending = False
         self.prefix = self.args.get('prefix', "predheat")
-        self.max_days_previous = 1
+        self.days_previous = [7]
+        self.days_previous_weight = [1]
 
     def record_status(self, message, debug="", had_errors = False):
         """
@@ -165,7 +245,7 @@ class PredHeat(hass.Hass):
             self.had_errors = True
 
     def minute_data(self, history, days, now, state_key, last_updated_key,
-                    backwards=False, to_key=None, smoothing=False, clean_increment=False, divide_by=0, scale=1.0, accumulate=[], adjust_key=None):
+                    backwards=False, to_key=None, smoothing=False, clean_increment=False, divide_by=0, scale=1.0, accumulate=[], adjust_key=None, prev_last_updated_time=None, last_state=0):
         """
         Turns data from HA into a hash of data indexed by minute with the data being the value
         Can be backwards in time for history (N minutes ago) or forward in time (N minutes in the future)
@@ -173,9 +253,7 @@ class PredHeat(hass.Hass):
         mdata = {}
         adata = {}
         newest_state = 0
-        last_state = 0
         newest_age = 999999
-        prev_last_updated_time = None
         max_increment = MAX_INCREMENT
 
         # Check history is valid
@@ -230,7 +308,11 @@ class PredHeat(hass.Hass):
                 if backwards:
                     to_time = prev_last_updated_time
                 else:
-                    to_time = None
+                    if smoothing:
+                        to_time = last_updated_time
+                        last_updated_time = prev_last_updated_time
+                    else:
+                        to_time = None
 
             if backwards:
                 timed = now - last_updated_time
@@ -256,30 +338,36 @@ class PredHeat(hass.Hass):
                 else:
                     if smoothing:
                         # Reset to zero, sometimes not exactly zero
-                        if state < last_state and (state <= (last_state / 10.0)):
+                        if clean_increment and state < last_state and (state <= (last_state / 10.0)):
                             while minute < minutes_to:
                                 mdata[minute] = state
                                 minute += 1
                         else:
                             # Can't really go backwards as incrementing data
-                            if state < last_state:
+                            if clean_increment and state < last_state:
                                 state = last_state
 
                             # Create linear function
                             diff = (state - last_state) / (minutes_to - minute)
 
                             # If the spike is too big don't smooth it, it will removed in the clean function later
-                            if max_increment > 0 and diff > max_increment:
+                            if clean_increment and max_increment > 0 and diff > max_increment:
                                 diff = 0
 
                             index = 0
                             while minute < minutes_to:
-                                mdata[minute] = state - diff*index
+                                if backwards:
+                                    mdata[minute] = state - diff*index
+                                else:
+                                    mdata[minute] = last_state + diff*index
                                 minute += 1
                                 index += 1
                     else:
                         while minute < minutes_to:
-                            mdata[minute] = state
+                            if backwards:
+                                mdata[minute] = last_state
+                            else:
+                                mdata[minute] = state
                             if adjusted:
                                 adata[minute] = True
                             minute += 1
@@ -287,7 +375,10 @@ class PredHeat(hass.Hass):
                 mdata[minutes] = state
 
             # Store previous time & state
-            prev_last_updated_time = last_updated_time
+            if to_time and not backwards:
+                prev_last_updated_time = to_time
+            else:
+                prev_last_updated_time = last_updated_time
             last_state = state
 
         # If we only have a start time then fill the gaps with the last values
@@ -362,7 +453,19 @@ class PredHeat(hass.Hass):
         """
         return round(value*1000)/1000
 
-    def minute_data_entity(self, now_utc, key, incrementing=False):
+    def get_weather_data(self, now_utc):
+
+        entity_id = self.get_arg('weather', indirect=False)
+        data = self.get_arg('weather', attribute='forecast')
+        self.temperatures = {}
+
+        if data:
+            self.temperatures = self.minute_data(data, self.forecast_days, now_utc, 'temperature', 'datetime', backwards=False, smoothing=True, prev_last_updated_time=now_utc, last_state=self.external_temperature[0])
+        else:
+            self.log("WARN: Unable to fetch data for {}".format(entity_id))
+            self.record_status("Warn - Unable to fetch data from {}".format(entity_id), had_errors=True)
+
+    def minute_data_entity(self, now_utc, key, incrementing=False, smoothing=False):
         """
         Download one or more entities of data
         """
@@ -371,6 +474,7 @@ class PredHeat(hass.Hass):
             entity_ids = [entity_ids]
 
         data_points = {}
+        age_days = None
         total_count = len(entity_ids)
         for entity_id in entity_ids:
             try:
@@ -379,12 +483,167 @@ class PredHeat(hass.Hass):
                 history = []
 
             if history:
-                data_points = self.minute_data(history[0], self.max_days_previous, now_utc, 'state', 'last_updated', backwards=True, smoothing=True, scale=1.0 / total_count, clean_increment=incrementing, accumulate=data_points)
+                item = history[0][0]
+                try:
+                    last_updated_time = self.str2time(item['last_updated'])
+                except (ValueError, TypeError):
+                    last_updated_time = now_utc
+
+                age = now_utc - last_updated_time
+                if age_days is None:
+                    age_days = age.days
+                else:
+                    age_days = min(age_days, age.days)
+
+            if history:
+                data_points = self.minute_data(history[0], self.max_days_previous, now_utc, 'state', 'last_updated', backwards=True, smoothing=smoothing, scale=1.0 / total_count, clean_increment=incrementing, accumulate=data_points)
             else:
                 self.log("WARN: Unable to fetch history for {}".format(entity_id))
                 self.record_status("Warn - Unable to fetch history from {}".format(entity_id), had_errors=True)
 
-        return data_points
+        if age_days is None:
+            age_days = 0
+        return data_points, age_days
+
+    def get_from_history(self, data, index):
+        """
+        Get a single value from an incrementing series e.g. kwh today -> kwh this minute
+        """
+        while index < 0:
+            index += 24*60
+        return data.get(index, 0)
+
+    def get_historical(self, data, minute):
+        """
+        Get historical data across N previous days in days_previous array based on current minute 
+        """
+        total = 0
+        total_weight = 0
+        this_point = 0
+
+        # No data?
+        if not data:
+            return 0
+
+        for days in self.days_previous:
+            use_days = min(days, self.minute_data_age)
+            weight = self.days_previous_weight[this_point]                
+            if use_days > 0:
+                full_days = 24*60*(use_days - 1)
+                minute_previous = 24 * 60 - minute + full_days
+                value = self.get_from_history(data, minute_previous)
+                total += value * weight
+                total_weight += weight
+            this_point += 1
+    
+        # Zero data?
+        if total_weight == 0:
+            return 0
+        else:
+            return total / total_weight
+
+    def run_simulation(self, volume_temp):
+
+        internal_temp = self.internal_temperature[0]
+        external_temp = self.external_temperature[0]
+        internal_temp_predict_stamp = {}
+        external_temp_predict_stamp = {}
+        internal_temp_predict_minute = {}
+        target_temp_predict_stamp = {}
+        target_temp_predict_minute = {}
+        heat_energy = 0
+        heat_to_predict_stamp = {}
+        heat_to_predict_temperature = {}
+        heating_on = False
+        next_volume_temp = volume_temp
+        volume_temp_stamp = {}
+        heat_energy_predict_stamp = {}
+        WATTS_TO_DEGREES = 1.16
+
+        self.log("External temp now {} ".format(self.temperatures.get(0, external_temp)))
+
+        for minute in range(0, self.forecast_days*24*60, PREDICT_STEP):
+            minute_absolute = minute + self.minutes_now
+            external_temp = self.temperatures.get(minute, external_temp)
+
+            target_temp = self.get_historical(self.target_temperature, minute)
+
+            temp_diff_outside = internal_temp - external_temp
+            temp_diff_inside = target_temp - internal_temp
+
+            # Thermostat model
+            if temp_diff_inside >= 0.5:
+                heating_on = True
+            elif temp_diff_inside <= -0.5:
+                heating_on = False
+
+            heat_loss_current = self.heat_loss_watts * temp_diff_outside * PREDICT_STEP / 60.0
+            heat_loss_current -= self.heat_gain_static * PREDICT_STEP / 60.0
+
+            flow_temp = 0
+            heat_to = 0
+            heat_power_in = 0
+            heat_power_out = 0
+            if heating_on:
+                heat_to = target_temp + 0.5
+                flow_temp = self.flow_temp
+                if volume_temp < flow_temp:
+                    heat_power_in = self.heat_max_power
+                else:
+                    # XXX: For heat pump try to maintain flow temp or for boiler turn off
+                    pass
+
+                heat_energy += heat_power_in * PREDICT_STEP / 60.0
+                heat_power_out = heat_power_in * self.heat_cop
+
+                # Gas boiler flow temperature adjustment in efficiency
+                inlet_temp = int(volume_temp / 10 + 0.5) * 10
+                condensing = GAS_EFFICIENCY.get(inlet_temp, 0.80)
+                heat_power_out *= condensing
+
+                # 1.16 watts required to raise water by 1 degree in 1 hour
+                volume_temp += (heat_power_out / WATTS_TO_DEGREES / self.heat_volume) * PREDICT_STEP / 60.0
+            
+            flow_delta = volume_temp - internal_temp
+            flow_delta_rounded = int(flow_delta / 5 + 0.5) * 5
+            flow_delta_rounded = max(flow_delta_rounded, 0)
+            flow_delta_rounded = min(flow_delta_rounded, 75)
+            correction = DELTA_CORRECTION.get(flow_delta_rounded, 0)
+            heat_output = self.heat_output * correction
+
+            # Cooling of the radiators
+            volume_temp -= (heat_output / WATTS_TO_DEGREES / self.heat_volume) * PREDICT_STEP / 60.0
+
+            heat_loss_current -= heat_output * PREDICT_STEP / 60.0
+
+            internal_temp = internal_temp - heat_loss_current / self.watt_per_degree             
+
+            # Store for charts
+            if (minute % 10) == 0:
+                minute_timestamp = self.midnight_utc + timedelta(seconds=60*minute_absolute)
+                stamp = minute_timestamp.strftime(TIME_FORMAT)
+                internal_temp_predict_stamp[stamp] = self.dp2(internal_temp)
+                internal_temp_predict_minute[minute] = self.dp2(internal_temp)
+                external_temp_predict_stamp[stamp] = self.dp2(external_temp)
+                target_temp_predict_stamp[stamp] = self.dp2(target_temp)
+                target_temp_predict_minute[minute] = self.dp2(target_temp)
+                heat_to_predict_stamp[stamp] = self.dp2(heat_to)
+                heat_to_predict_temperature[minute] = self.dp2(heat_to)
+                heat_energy_predict_stamp[stamp] = self.dp2(heat_energy) / 1000.0
+                volume_temp_stamp[stamp] = volume_temp
+            
+            if minute == 0:
+                next_volume_temp = volume_temp
+
+        self.set_state(self.prefix + ".internal_temp", state=self.dp2(self.internal_temperature[0]), attributes = {'results' : internal_temp_predict_stamp, 'friendly_name' : 'Internal Temperature Predicted', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".external_temp", state=self.dp2(self.external_temperature[0]), attributes = {'results' : external_temp_predict_stamp, 'friendly_name' : 'External Temperature Predicted', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".target_temp", state=self.dp2(target_temp_predict_minute[0]), attributes = {'results' : target_temp_predict_stamp, 'friendly_name' : 'Target Temperature Predicted', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".heat_to_temp", state=self.dp2(heat_to_predict_temperature[0]), attributes = {'results' : heat_to_predict_stamp, 'friendly_name' : 'Predict heating to target', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".internal_temp_h1", state=self.dp2(internal_temp_predict_minute[60]), attributes = {'friendly_name' : 'Internal Temperature Predicted h1', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".internal_temp_h8", state=self.dp2(internal_temp_predict_minute[60 * 8]), attributes = {'friendly_name' : 'Internal Temperature Predicted h8', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".heat_energy", state=0.0, attributes = {'results' : heat_energy_predict_stamp, 'friendly_name' : 'Predict heating energy', 'state_class': 'measurement', 'unit_of_measurement': 'kWh'})
+        self.set_state(self.prefix + ".volume_temp", state=self.dp2(next_volume_temp), attributes = {'results' : volume_temp_stamp, 'friendly_name' : 'Volume temperature', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        return next_volume_temp
 
     def update_pred(self, scheduled):
         self.had_errors = False
@@ -392,14 +651,51 @@ class PredHeat(hass.Hass):
         local_tz = pytz.timezone(self.get_arg('timezone', "Europe/London"))
         now_utc = datetime.now(local_tz)
         now = datetime.now()
+        self.forecast_days = self.get_arg('forecast_days', 2)
+        self.midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        self.midnight_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        self.minutes_now = int((now - self.midnight).seconds / 60 / PREDICT_STEP) * PREDICT_STEP
 
         self.log("--------------- PredHeat - update at {}".format(now_utc))
-        self.max_days_previous = self.get_arg('max_days_previous', 7)
+        self.days_previous = self.get_arg('days_previous', [7])
+        self.days_previous_weight = self.get_arg('days_previous_weight', [1 for i in range(0, len(self.days_previous))])
+        if len(self.days_previous) > len(self.days_previous_weight):
+            # Extend weights with 1 if required
+            self.days_previous_weight += [1 for i in range(0, len(self.days_previous) - len(self.days_previous_weight))]
+        self.max_days_previous = max(self.days_previous) + 1
 
-        self.external_temperature = self.minute_data_entity(now_utc, 'external_temperature')
-        self.internal_temperature = self.minute_data_entity(now_utc, 'internal_temperature')
-        self.target_temperature   = self.minute_data_entity(now_utc, 'target_temperature')
-        self.heating_energy       = self.minute_data_entity(now_utc, 'heating_energy', incrementing=True)
+        self.external_temperature, age_external = self.minute_data_entity(now_utc, 'external_temperature', smoothing=True)
+        self.internal_temperature, age_internal = self.minute_data_entity(now_utc, 'internal_temperature', smoothing=True)
+        self.target_temperature,   age_target   = self.minute_data_entity(now_utc, 'target_temperature')
+        self.flow_temp            = self.get_arg('flow_temp', 40.0)
+        self.minute_data_age      = min(age_external, age_internal, age_target)
+        self.log("We have {} days of historical data".format(self.minute_data_age))
+        self.heating_energy       = self.minute_data_entity(now_utc, 'heating_energy', incrementing=True, smoothing=True)
+        self.heat_loss_watts      = self.get_arg('heat_loss_watts', 100)
+        self.heat_loss_degrees    = self.get_arg('heat_loss_degrees', 0.02)
+        self.heat_gain_static     = self.get_arg('heat_gain_static', 0)
+        self.watt_per_degree      = self.heat_loss_watts / self.heat_loss_degrees
+        self.heat_output          = self.get_arg('heat_output', 7000)
+        self.heat_volume          = self.get_arg('heat_volume', 200)
+        self.heat_max_power       = self.get_arg('heat_max_power', 30000)
+        self.heat_cop             = self.get_arg('heat_cop', 0.9)
+        self.next_volume_temp     = self.get_arg('next_volume_temp', self.internal_temperature[0])
+
+        self.log("Heat loss watts {} degrees {} per degree {}".format(self.heat_loss_watts, self.heat_loss_degrees, self.watt_per_degree))
+        self.get_weather_data(now_utc)
+        status = 'idle'
+
+        next_volume_temp = self.run_simulation(self.next_volume_temp)
+        if scheduled:
+            # Update state
+            self.next_volume_temp = next_volume_temp
+            self.expose_config('next_volume_temp', self.next_volume_temp)
+
+        if self.had_errors:
+            self.log("Completed run status {} with Errors reported (check log)".format(status))
+        else:
+            self.log("Completed run status {}".format(status))
+            self.record_status(status)
 
 
     def select_event(self, event, data, kwargs):
@@ -654,6 +950,8 @@ class PredHeat(hass.Hass):
         self.log("Predheat: Startup")
         try:
             self.reset()
+            self.auto_config()
+            self.load_user_config()
         except Exception as e:
             self.log("ERROR: Exception raised {}".format(e))
             self.record_status('ERROR: Exception raised {}'.format(e))
