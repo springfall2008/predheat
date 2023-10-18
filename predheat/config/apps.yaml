@@ -21,6 +21,10 @@ pred_heat:
   days_previous: 
     - 7
 
+
+  # Gas or heatpump mode ('gas' or 'pump')
+  mode: gas
+
   # External temperature sensor
   external_temperature: sensor.external_temperature
 
@@ -57,10 +61,22 @@ pred_heat:
 
   # Heating max power in Watts
   heat_max_power: 30000
+  heat_min_power: 7000
 
-  # Heating cop
-  heat_cop: 0.9
+  # Heating cop is the maximum effiency and will be scaled down based on temperatures
+  # put 1.0 for condensing gas boilers, or around 4.0 for heat pumps
+  heat_cop: 1.0
 
   # Current flow temperature setting
   flow_temp: number.boiler_heatingtemp
+  float_difference_target: 20
 
+  # Energy rates
+  metric_octopus_import: 're:(sensor.(octopus_energy_|)gas_[0-9a-z]+_[0-9a-z]+_current_rate)'
+
+  # Standing charge can be set to a sensor (e.g. Octopus) or manually entered in pounds here (e.g. 0.50 is 50p)
+  metric_standing_charge: 're:(sensor.(octopus_energy_|)gas_[0-9a-z]+_[0-9a-z]+_current_standing_charge)'
+
+  # Or manual rate
+  #rates_import:
+  #  -  rate: 7.0
