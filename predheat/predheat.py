@@ -104,6 +104,31 @@ GAS_EFFICIENCY = {
     100 : 0.84    
 }
 
+HEAT_PUMP_EFFICIENCY = {
+    -20 : 2.10,
+    -18 : 2.15,
+    -16	: 2.2,
+    -14	: 2.25,
+    -12	: 2.3,
+    -10	: 2.4,
+    -8	: 2.5,
+    -6	: 2.6,
+    -4	: 2.7,
+    -2	: 2.8,
+    0	: 2.9,
+    2	: 3.1,
+    4	: 3.3,
+    6	: 3.6,
+    8	: 3.8,
+    10	: 3.9,
+    12	: 4.1,
+    14	: 4.3,
+    16  : 4.3,
+    18  : 4.3,
+    20  : 4.3
+}
+HEAT_PUMP_EFFICIENCY_MAX = 4.3
+
 class PredHeat(hass.Hass):
     """ 
     The heating prediction class itself 
@@ -505,9 +530,17 @@ class PredHeat(hass.Hass):
             age_days = 0
         return data_points, age_days
 
-    def get_from_history(self, data, index):
+    def get_from_incrementing(self, data, index):
         """
         Get a single value from an incrementing series e.g. kwh today -> kwh this minute
+        """
+        while index < 0:
+            index += 24*60
+        return data.get(index, 0) - data.get(index + 1, 0)
+
+    def get_from_history(self, data, index):
+        """
+        Get a single value from a series e.g. temperature now
         """
         while index < 0:
             index += 24*60
@@ -551,7 +584,7 @@ class PredHeat(hass.Hass):
         internal_temp_predict_minute = {}
         target_temp_predict_stamp = {}
         target_temp_predict_minute = {}
-        heat_energy = 0
+        heat_energy = self.heat_energy_today
         heat_to_predict_stamp = {}
         heat_to_predict_temperature = {}
         heating_on = False
@@ -559,8 +592,11 @@ class PredHeat(hass.Hass):
         volume_temp_stamp = {}
         heat_energy_predict_stamp = {}
         WATTS_TO_DEGREES = 1.16
+        cost = self.import_today_cost
+        cost_stamp = {}
+        cost_minute = {}
 
-        self.log("External temp now {} ".format(self.temperatures.get(0, external_temp)))
+        self.log("External temp now {}".format(self.temperatures.get(0, external_temp)))
 
         for minute in range(0, self.forecast_days*24*60, PREDICT_STEP):
             minute_absolute = minute + self.minutes_now
@@ -574,7 +610,7 @@ class PredHeat(hass.Hass):
             # Thermostat model
             if temp_diff_inside >= 0.5:
                 heating_on = True
-            elif temp_diff_inside <= -0.5:
+            elif temp_diff_inside <= 0:
                 heating_on = False
 
             heat_loss_current = self.heat_loss_watts * temp_diff_outside * PREDICT_STEP / 60.0
@@ -585,21 +621,31 @@ class PredHeat(hass.Hass):
             heat_power_in = 0
             heat_power_out = 0
             if heating_on:
-                heat_to = target_temp + 0.5
+                heat_to = target_temp
                 flow_temp = self.flow_temp
                 if volume_temp < flow_temp:
-                    heat_power_in = self.heat_max_power
-                else:
-                    # XXX: For heat pump try to maintain flow temp or for boiler turn off
-                    pass
+                    flow_temp_diff = flow_temp - volume_temp
+                    power_percent = flow_temp_diff / self.flow_difference_target
+                    heat_power_in = (self.heat_max_power - self.heat_min_power) * power_percent
+                    heat_power_in = max(self.heat_min_power, heat_power_in)
+                    heat_power_in = min(self.heat_max_power, heat_power_in)
 
-                heat_energy += heat_power_in * PREDICT_STEP / 60.0
+                energy_now = heat_power_in * PREDICT_STEP / 60.0 / 1000.0
+                cost += energy_now + self.rate_import.get(minute_absolute, 0)
+
+                heat_energy += energy_now
                 heat_power_out = heat_power_in * self.heat_cop
 
-                # Gas boiler flow temperature adjustment in efficiency
-                inlet_temp = int(volume_temp / 10 + 0.5) * 10
-                condensing = GAS_EFFICIENCY.get(inlet_temp, 0.80)
-                heat_power_out *= condensing
+                if self.mode == 'gas':
+                    # Gas boiler flow temperature adjustment in efficiency based on flow temp
+                    inlet_temp = int(volume_temp / 10 + 0.5) * 10
+                    condensing = GAS_EFFICIENCY.get(inlet_temp, 0.80)
+                    heat_power_out *= condensing
+                else:
+                    # Heat pump efficiency based on outdoor temp
+                    out_temp = int(external_temp / 2 + 0.5) * 2
+                    cop_adjust = HEAT_PUMP_EFFICIENCY.get(out_temp, 2.0) / HEAT_PUMP_EFFICIENCY_MAX
+                    heat_power_out *= cop_adjust
 
                 # 1.16 watts required to raise water by 1 degree in 1 hour
                 volume_temp += (heat_power_out / WATTS_TO_DEGREES / self.heat_volume) * PREDICT_STEP / 60.0
@@ -629,8 +675,10 @@ class PredHeat(hass.Hass):
                 target_temp_predict_minute[minute] = self.dp2(target_temp)
                 heat_to_predict_stamp[stamp] = self.dp2(heat_to)
                 heat_to_predict_temperature[minute] = self.dp2(heat_to)
-                heat_energy_predict_stamp[stamp] = self.dp2(heat_energy) / 1000.0
-                volume_temp_stamp[stamp] = volume_temp
+                heat_energy_predict_stamp[stamp] = self.dp2(heat_energy)
+                volume_temp_stamp[stamp] = self.dp2(volume_temp)
+                cost_stamp[stamp] = self.dp2(cost)
+                cost_minute[minute] = self.dp2(cost)
             
             if minute == 0:
                 next_volume_temp = volume_temp
@@ -639,11 +687,133 @@ class PredHeat(hass.Hass):
         self.set_state(self.prefix + ".external_temp", state=self.dp2(self.external_temperature[0]), attributes = {'results' : external_temp_predict_stamp, 'friendly_name' : 'External Temperature Predicted', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
         self.set_state(self.prefix + ".target_temp", state=self.dp2(target_temp_predict_minute[0]), attributes = {'results' : target_temp_predict_stamp, 'friendly_name' : 'Target Temperature Predicted', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
         self.set_state(self.prefix + ".heat_to_temp", state=self.dp2(heat_to_predict_temperature[0]), attributes = {'results' : heat_to_predict_stamp, 'friendly_name' : 'Predict heating to target', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
-        self.set_state(self.prefix + ".internal_temp_h1", state=self.dp2(internal_temp_predict_minute[60]), attributes = {'friendly_name' : 'Internal Temperature Predicted h1', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
-        self.set_state(self.prefix + ".internal_temp_h8", state=self.dp2(internal_temp_predict_minute[60 * 8]), attributes = {'friendly_name' : 'Internal Temperature Predicted h8', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
-        self.set_state(self.prefix + ".heat_energy", state=0.0, attributes = {'results' : heat_energy_predict_stamp, 'friendly_name' : 'Predict heating energy', 'state_class': 'measurement', 'unit_of_measurement': 'kWh'})
+        self.set_state(self.prefix + ".internal_temp_h1", state=self.dp2(internal_temp_predict_minute[60]), attributes = {'friendly_name' : 'Internal Temperature Predicted +1hr', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".internal_temp_h8", state=self.dp2(internal_temp_predict_minute[60 * 8]), attributes = {'friendly_name' : 'Internal Temperature Predicted +8hrs', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".heat_energy", state=self.heat_energy_today, attributes = {'results' : heat_energy_predict_stamp, 'friendly_name' : 'Predict heating energy', 'state_class': 'measurement', 'unit_of_measurement': 'kWh'})
         self.set_state(self.prefix + ".volume_temp", state=self.dp2(next_volume_temp), attributes = {'results' : volume_temp_stamp, 'friendly_name' : 'Volume temperature', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".cost", state=self.dp2(cost), attributes = {'results' : cost_stamp, 'friendly_name' : 'Predicted cost', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".cost_h1", state=self.dp2(cost_minute[60]), attributes = {'friendly_name' : 'Predicted cost +1hr', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".cost_h8", state=self.dp2(cost_minute[60*8]), attributes = {'friendly_name' : 'Predicted cost +8hrs', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
         return next_volume_temp
+
+    def rate_replicate(self, rates, rate_io={}, is_import=True):
+        """
+        We don't get enough hours of data for Octopus, so lets assume it repeats until told others
+        """
+        minute = 0
+        rate_last = 0
+        adjusted_rates = {}
+
+        # Add 48 extra hours to make sure the whole cycle repeats another day
+        while minute < (self.forecast_minutes + 48*60):
+            if minute not in rates:
+                # Take 24-hours previous if missing rate
+                if (minute >= 24*60) and ((minute - 24*60) in rates):
+                    minute_mod = minute - 24*60
+                else:
+                    minute_mod = minute % (24 * 60)
+
+                if (minute_mod in rate_io) and rate_io[minute_mod]:
+                    # Dont replicate Intelligent rates into the next day as it will be different
+                    rate_offset = self.rate_max
+                elif minute_mod in rates:
+                    rate_offset = rates[minute_mod]
+                else:
+                    # Missing rate within 24 hours - fill with dummy last rate
+                    rate_offset = rate_last
+
+                # Only offset once not every day
+                if minute_mod not in adjusted_rates:
+                    if is_import:
+                        rate_offset = rate_offset + self.metric_future_rate_offset_import
+                    else:
+                        rate_offset = max(rate_offset + self.metric_future_rate_offset_export, 0)
+                    adjusted_rates[minute] = True
+
+                rates[minute] = rate_offset
+            else:
+                rate_last = rates[minute]
+            minute += 1
+        return rates
+
+    def basic_rates(self, info, rtype, prev=None):
+        """
+        Work out the energy rates based on user supplied time periods
+        works on a 24-hour period only and then gets replicated later for future days
+        """
+        rates = {}
+
+        if prev:
+            rates = prev.copy()
+            self.log("Override {} rate info {}".format(rtype, info))
+        else:
+            # Set to zero
+            self.log("Adding {} rate info {}".format(rtype, info))
+            for minute in range(0, 24*60):
+                rates[minute] = 0
+
+        max_minute = max(rates) + 1
+        midnight = datetime.strptime('00:00:00', "%H:%M:%S")
+        for this_rate in info:
+            start = datetime.strptime(this_rate.get('start', "00:00:00"), "%H:%M:%S")
+            end = datetime.strptime(this_rate.get('end', "00:00:00"), "%H:%M:%S")
+            date = None
+            if 'date' in this_rate:
+                date = datetime.strptime(this_rate['date'], "%Y-%m-%d")
+            rate = this_rate.get('rate', 0)
+
+            # Time in minutes
+            start_minutes = max(self.minutes_to_time(start, midnight), 0)
+            end_minutes   = min(self.minutes_to_time(end, midnight), 24*60-1)
+
+            # Make end > start
+            if end_minutes <= start_minutes:
+                end_minutes += 24*60
+
+            # Adjust for date if specified
+            if date:
+                delta_minutes = self.minutes_to_time(date, self.midnight)
+                start_minutes += delta_minutes
+                end_minutes += delta_minutes
+
+            # Store rates against range
+            if end_minutes >= 0 and start_minutes < max_minute:
+                for minute in range(start_minutes, end_minutes):
+                    if (not date) or (minute >= 0 and minute < max_minute):
+                        rates[minute % max_minute] = rate
+
+        return rates
+
+    def today_cost(self, import_today):
+        """
+        Work out energy costs today (approx)
+        """
+        day_cost = 0
+        day_cost_import = 0
+        day_energy = 0
+        day_cost_time = {}
+
+        for minute in range(0, self.minutes_now):
+            # Add in standing charge
+            if (minute % (24*60)) == 0:
+                day_cost += self.metric_standing_charge
+
+            minute_back = self.minutes_now - minute - 1
+            energy = 0
+            energy = self.get_from_incrementing(import_today, minute_back)
+            day_energy += energy
+            
+            if self.rate_import:
+                day_cost += self.rate_import[minute] * energy
+
+            if (minute % 10) == 0:
+                minute_timestamp = self.midnight_utc + timedelta(minutes=minute)
+                stamp = minute_timestamp.strftime(TIME_FORMAT)
+                day_cost_time[stamp] = self.dp2(day_cost)
+
+        self.set_state(self.prefix + ".cost_today", state=self.dp2(day_cost), attributes = {'results' : day_cost_time, 'friendly_name' : 'Cost so far today', 'state_class' : 'measurement', 'unit_of_measurement': 'p', 'icon': 'mdi:currency-usd'})
+        self.log("Todays energy import {} kwh cost {} p".format(self.dp2(day_energy), self.dp2(day_cost), self.dp2(day_cost_import)))
+        return day_cost
 
     def update_pred(self, scheduled):
         self.had_errors = False
@@ -652,9 +822,11 @@ class PredHeat(hass.Hass):
         now_utc = datetime.now(local_tz)
         now = datetime.now()
         self.forecast_days = self.get_arg('forecast_days', 2)
+        self.forecast_minutes = self.forecast_days*60*24
         self.midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         self.midnight_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
         self.minutes_now = int((now - self.midnight).seconds / 60 / PREDICT_STEP) * PREDICT_STEP
+        self.metric_future_rate_offset_import = 0
 
         self.log("--------------- PredHeat - update at {}".format(now_utc))
         self.days_previous = self.get_arg('days_previous', [7])
@@ -667,10 +839,15 @@ class PredHeat(hass.Hass):
         self.external_temperature, age_external = self.minute_data_entity(now_utc, 'external_temperature', smoothing=True)
         self.internal_temperature, age_internal = self.minute_data_entity(now_utc, 'internal_temperature', smoothing=True)
         self.target_temperature,   age_target   = self.minute_data_entity(now_utc, 'target_temperature')
+        self.heating_energy,       age_energy  = self.minute_data_entity(now_utc, 'heating_energy', incrementing=True, smoothing=True)
+        self.minute_data_age      = min(age_external, age_internal, age_target, age_energy)
+
+        self.heat_energy_today    = self.heating_energy.get(0, 0) - self.heating_energy.get(self.minutes_now, 0)
+
+        self.mode                 = self.get_arg('mode', 'pump')
         self.flow_temp            = self.get_arg('flow_temp', 40.0)
-        self.minute_data_age      = min(age_external, age_internal, age_target)
+        self.flow_difference_target = self.get_arg('float_difference_target', 20.0)
         self.log("We have {} days of historical data".format(self.minute_data_age))
-        self.heating_energy       = self.minute_data_entity(now_utc, 'heating_energy', incrementing=True, smoothing=True)
         self.heat_loss_watts      = self.get_arg('heat_loss_watts', 100)
         self.heat_loss_degrees    = self.get_arg('heat_loss_degrees', 0.02)
         self.heat_gain_static     = self.get_arg('heat_gain_static', 0)
@@ -678,13 +855,56 @@ class PredHeat(hass.Hass):
         self.heat_output          = self.get_arg('heat_output', 7000)
         self.heat_volume          = self.get_arg('heat_volume', 200)
         self.heat_max_power       = self.get_arg('heat_max_power', 30000)
+        self.heat_min_power       = self.get_arg('heat_min_power', 7000)
         self.heat_cop             = self.get_arg('heat_cop', 0.9)
         self.next_volume_temp     = self.get_arg('next_volume_temp', self.internal_temperature[0])
 
-        self.log("Heat loss watts {} degrees {} per degree {}".format(self.heat_loss_watts, self.heat_loss_degrees, self.watt_per_degree))
+        self.log("Heat loss watts {} degrees {} per degree {} heating energy so far {}".format(self.heat_loss_watts, self.heat_loss_degrees, self.watt_per_degree, self.heat_energy_today))
         self.get_weather_data(now_utc)
         status = 'idle'
 
+        if 'metric_octopus_import' in self.args:
+            # Octopus import rates
+            entity_id = self.get_arg('metric_octopus_import', None, indirect=False)
+            data_all = []
+            
+            if entity_id:
+                data_import = self.get_state(entity_id = entity_id, attribute='rates')
+                if data_import:
+                    data_all += data_import
+                else:
+                    data_import = self.get_state(entity_id = entity_id, attribute='all_rates')
+                    if data_import:
+                        data_all += data_import
+
+            if data_all:
+                rate_key = 'rate'
+                from_key = 'from'
+                to_key = 'to'
+                if rate_key not in data_all[0]:
+                    rate_key = 'value_inc_vat'
+                    from_key = 'valid_from'
+                    to_key = 'valid_to'
+                self.rate_import = self.minute_data(data_all, self.forecast_days + 1, self.midnight_utc, rate_key, from_key, backwards=False, to_key=to_key, adjust_key='is_intelligent_adjusted')
+            else:
+                self.log("Warning: metric_octopus_import is not set correctly, ignoring..")
+                self.record_status(message="Error - metric_octopus_import not set correctly", had_errors=True)
+                raise ValueError
+        else:
+            # Basic rates defined by user over time
+            self.rate_import = self.basic_rates(self.get_arg('rates_import', [], indirect=False), 'import')
+
+        # Standing charge
+        self.metric_standing_charge = self.get_arg('metric_standing_charge', 0.0) * 100.0
+        self.log("Standing charge is set to {} p".format(self.metric_standing_charge))
+
+        # Replicate rates
+        self.rate_import = self.rate_replicate(self.rate_import)
+
+        # Cost so far today
+        self.import_today_cost = self.today_cost(self.heating_energy)
+
+        # Run sim
         next_volume_temp = self.run_simulation(self.next_volume_temp)
         if scheduled:
             # Update state
