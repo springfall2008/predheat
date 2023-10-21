@@ -575,7 +575,7 @@ class PredHeat(hass.Hass):
         else:
             return total / total_weight
 
-    def run_simulation(self, volume_temp):
+    def run_simulation(self, volume_temp, heating_active):
 
         internal_temp = self.internal_temperature[0]
         external_temp = self.external_temperature[0]
@@ -585,16 +585,18 @@ class PredHeat(hass.Hass):
         target_temp_predict_stamp = {}
         target_temp_predict_minute = {}
         heat_energy = self.heat_energy_today
+        heat_energy_predict_minute = {}
+        heat_energy_predict_stamp = {}
         heat_to_predict_stamp = {}
         heat_to_predict_temperature = {}
         heating_on = False
         next_volume_temp = volume_temp
         volume_temp_stamp = {}
-        heat_energy_predict_stamp = {}
         WATTS_TO_DEGREES = 1.16
         cost = self.import_today_cost
         cost_stamp = {}
         cost_minute = {}
+        energy_today_external = []
 
         self.log("External temp now {}".format(self.temperatures.get(0, external_temp)))
 
@@ -607,8 +609,11 @@ class PredHeat(hass.Hass):
             temp_diff_outside = internal_temp - external_temp
             temp_diff_inside = target_temp - internal_temp
 
-            # Thermostat model
-            if temp_diff_inside >= 0.5:
+
+            # Thermostat model, override with current state also
+            if minute == 0:
+                heating_on = heating_active
+            elif temp_diff_inside >= 0.1:
                 heating_on = True
             elif temp_diff_inside <= 0:
                 heating_on = False
@@ -624,11 +629,13 @@ class PredHeat(hass.Hass):
                 heat_to = target_temp
                 flow_temp = self.flow_temp
                 if volume_temp < flow_temp:
-                    flow_temp_diff = flow_temp - volume_temp
+                    flow_temp_diff = min(flow_temp - volume_temp, self.flow_difference_target)
                     power_percent = flow_temp_diff / self.flow_difference_target
-                    heat_power_in = (self.heat_max_power - self.heat_min_power) * power_percent
+                    heat_power_in = self.heat_max_power * power_percent
                     heat_power_in = max(self.heat_min_power, heat_power_in)
                     heat_power_in = min(self.heat_max_power, heat_power_in)
+
+                    self.log("Minute {} flow {} volume {} diff {} power {} kw".format(minute, flow_temp, volume_temp, flow_temp_diff, heat_power_in / 1000.0))
 
                 energy_now = heat_power_in * PREDICT_STEP / 60.0 / 1000.0
                 cost += energy_now + self.rate_import.get(minute_absolute, 0)
@@ -676,24 +683,35 @@ class PredHeat(hass.Hass):
                 heat_to_predict_stamp[stamp] = self.dp2(heat_to)
                 heat_to_predict_temperature[minute] = self.dp2(heat_to)
                 heat_energy_predict_stamp[stamp] = self.dp2(heat_energy)
+                heat_energy_predict_minute[minute] = self.dp2(heat_energy)
                 volume_temp_stamp[stamp] = self.dp2(volume_temp)
                 cost_stamp[stamp] = self.dp2(cost)
                 cost_minute[minute] = self.dp2(cost)
+
+                entry = {}
+                entry['last_updated'] = stamp
+                entry['energy'] = self.dp2(heat_energy)
+                energy_today_external.append(entry)
             
             if minute == 0:
-                next_volume_temp = volume_temp
+                next_volume_temp = volume_temp            
 
         self.set_state(self.prefix + ".internal_temp", state=self.dp2(self.internal_temperature[0]), attributes = {'results' : internal_temp_predict_stamp, 'friendly_name' : 'Internal Temperature Predicted', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
         self.set_state(self.prefix + ".external_temp", state=self.dp2(self.external_temperature[0]), attributes = {'results' : external_temp_predict_stamp, 'friendly_name' : 'External Temperature Predicted', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
         self.set_state(self.prefix + ".target_temp", state=self.dp2(target_temp_predict_minute[0]), attributes = {'results' : target_temp_predict_stamp, 'friendly_name' : 'Target Temperature Predicted', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
         self.set_state(self.prefix + ".heat_to_temp", state=self.dp2(heat_to_predict_temperature[0]), attributes = {'results' : heat_to_predict_stamp, 'friendly_name' : 'Predict heating to target', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
         self.set_state(self.prefix + ".internal_temp_h1", state=self.dp2(internal_temp_predict_minute[60]), attributes = {'friendly_name' : 'Internal Temperature Predicted +1hr', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".internal_temp_h2", state=self.dp2(internal_temp_predict_minute[60 * 2]), attributes = {'friendly_name' : 'Internal Temperature Predicted +2hr', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
         self.set_state(self.prefix + ".internal_temp_h8", state=self.dp2(internal_temp_predict_minute[60 * 8]), attributes = {'friendly_name' : 'Internal Temperature Predicted +8hrs', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
-        self.set_state(self.prefix + ".heat_energy", state=self.heat_energy_today, attributes = {'results' : heat_energy_predict_stamp, 'friendly_name' : 'Predict heating energy', 'state_class': 'measurement', 'unit_of_measurement': 'kWh'})
+        self.set_state(self.prefix + ".heat_energy", state=self.heat_energy_today, attributes = {'external' : energy_today_external, 'results' : heat_energy_predict_stamp, 'friendly_name' : 'Predict heating energy', 'state_class': 'measurement', 'unit_of_measurement': 'kWh'})
+        self.set_state(self.prefix + ".heat_energy_h1", state=heat_energy_predict_minute[60], attributes = {'friendly_name' : 'Predict heating energy +1hr', 'state_class': 'measurement', 'unit_of_measurement': 'kWh'})
+        self.set_state(self.prefix + ".heat_energy_h2", state=heat_energy_predict_minute[60 * 2], attributes = {'friendly_name' : 'Predict heating energy +2hrs', 'state_class': 'measurement', 'unit_of_measurement': 'kWh'})
+        self.set_state(self.prefix + ".heat_energy_h8", state=heat_energy_predict_minute[60 * 8], attributes = {'friendly_name' : 'Predict heating energy +8hrs', 'state_class': 'measurement', 'unit_of_measurement': 'kWh'})
         self.set_state(self.prefix + ".volume_temp", state=self.dp2(next_volume_temp), attributes = {'results' : volume_temp_stamp, 'friendly_name' : 'Volume temperature', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
         self.set_state(self.prefix + ".cost", state=self.dp2(cost), attributes = {'results' : cost_stamp, 'friendly_name' : 'Predicted cost', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
         self.set_state(self.prefix + ".cost_h1", state=self.dp2(cost_minute[60]), attributes = {'friendly_name' : 'Predicted cost +1hr', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
-        self.set_state(self.prefix + ".cost_h8", state=self.dp2(cost_minute[60*8]), attributes = {'friendly_name' : 'Predicted cost +8hrs', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".cost_h2", state=self.dp2(cost_minute[60 * 2]), attributes = {'friendly_name' : 'Predicted cost +2hrs', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
+        self.set_state(self.prefix + ".cost_h8", state=self.dp2(cost_minute[60 * 8]), attributes = {'friendly_name' : 'Predicted cost +8hrs', 'state_class': 'measurement', 'unit_of_measurement': 'c'})
         return next_volume_temp
 
     def rate_replicate(self, rates, rate_io={}, is_import=True):
@@ -859,7 +877,9 @@ class PredHeat(hass.Hass):
         self.heat_cop             = self.get_arg('heat_cop', 0.9)
         self.next_volume_temp     = self.get_arg('next_volume_temp', self.internal_temperature[0])
 
-        self.log("Heat loss watts {} degrees {} per degree {} heating energy so far {}".format(self.heat_loss_watts, self.heat_loss_degrees, self.watt_per_degree, self.heat_energy_today))
+        self.heating_active       = self.get_arg('heating_active', False)
+
+        self.log("Heating active {} Heat loss watts {} degrees {} watts per degree {} heating energy so far {}".format(self.heating_active, self.heat_loss_watts, self.heat_loss_degrees, self.watt_per_degree, self.heat_energy_today))
         self.get_weather_data(now_utc)
         status = 'idle'
 
@@ -905,11 +925,12 @@ class PredHeat(hass.Hass):
         self.import_today_cost = self.today_cost(self.heating_energy)
 
         # Run sim
-        next_volume_temp = self.run_simulation(self.next_volume_temp)
+        next_volume_temp = self.run_simulation(self.next_volume_temp, self.heating_active)
         if scheduled:
             # Update state
             self.next_volume_temp = next_volume_temp
             self.expose_config('next_volume_temp', self.next_volume_temp)
+            self.log("Updated next_volume_temp to {}".format(self.next_volume_temp))
 
         if self.had_errors:
             self.log("Completed run status {} with Errors reported (check log)".format(status))
