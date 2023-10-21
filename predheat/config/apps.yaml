@@ -7,7 +7,7 @@ pred_heat:
   prefix: predheat
 
   # XXX: This is a configuration template, delete this line once you edit your configuration
-  # template: True
+  template: True
 
   # Timezone to work in
   timezone: Europe/London
@@ -54,10 +54,10 @@ pred_heat:
   heat_loss_degrees: 0.030
 
   # Heating max output (of the raditors), in Watts at delta 50 (BTU / 3.41)
-  heat_output: 25000 
+  heat_output: 17000 
 
   # 11 litres per kW for steel panel raditors
-  heat_volume: 275
+  heat_volume: 190
 
   # Heating max power in Watts
   heat_max_power: 30000
@@ -69,7 +69,7 @@ pred_heat:
 
   # Current flow temperature setting
   flow_temp: number.boiler_heatingtemp
-  float_difference_target: 20
+  float_difference_target: 40
 
   # Energy rates
   metric_octopus_import: 're:(sensor.(octopus_energy_|)gas_[0-9a-z]+_[0-9a-z]+_current_rate)'
