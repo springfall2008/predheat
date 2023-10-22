@@ -21,7 +21,6 @@ pred_heat:
   days_previous: 
     - 7
 
-
   # Gas or heatpump mode ('gas' or 'pump')
   mode: gas
 
@@ -38,8 +37,12 @@ pred_heat:
   # Sensor with history that monitors the thermostat setting in the house
   target_temperature: sensor.living_room_target
 
-  # Past energy consumption of heating in KWh
+  # When true models a smart thermostat that turns the heating ahead of the target temperature so it reachs it just in time
+  smart_thermostat: True
+
+  # Past energy consumption of heating in KWh, scaled with heating_energy_scaling
   heating_energy: sensor.boiler_nrgheat
+  heating_energy_scaling: 1.4
 
   # Heating is turned on history
   heating_active: binary_sensor.boiler_heatingactive
@@ -54,10 +57,14 @@ pred_heat:
   heat_loss_degrees: 0.030
 
   # Heating max output (of the raditors), in Watts at delta 50 (BTU / 3.41)
-  heat_output: 17000 
+  # https://www.bestheating.com/milano-kent-straight-chrome-heated-towel-rail-various-sizes-91119
+  # https://www.bestheating.com/milano-compact-type-11-single-panel-radiator-multi-sizes-available-74174
+  # https://www.bestheating.com/milano-compact-type-22-double-panel-radiator-multi-sizes-available-74176
+  # https://www.bestheating.com/milano-compact-type-21-double-panel-plus-radiator-multi-sizes-available-74175
+  heat_output: 17000
 
-  # 11 litres per kW for steel panel raditors
-  heat_volume: 190
+  # Add up radiator volume + any pipework or expansion vessle
+  heat_volume: 75
 
   # Heating max power in Watts
   heat_max_power: 30000
