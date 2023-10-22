@@ -33,6 +33,9 @@ The outputs are:
 
 Future versions will also offer Predbat to run in master mode, controlling your homes heating in the same way as a smart thermostat (e.g. Nest)
 
+![image](https://github.com/springfall2008/predheat/assets/48591903/76715c96-5f84-41ed-ae90-ea2e893818ae)
+
+
 ## Installation guide
 
 1. Install AppDaemon if you haven't already  - [AppDaemon install](#appdaemon-install)
