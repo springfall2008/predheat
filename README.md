@@ -14,6 +14,8 @@ For support please raise a Github ticket
 If you want to buy me a beer then please use Paypal - tdlj@tdlj.net
 ![image](https://github.com/springfall2008/batpred/assets/48591903/b3a533ef-0862-4e0b-b272-30e254f58467)
 
+![image](https://github.com/springfall2008/predheat/assets/48591903/76715c96-5f84-41ed-ae90-ea2e893818ae)
+
 ## Operation
 
 The app runs every 5 minutes and it will automatically update its prediction for the heating system for the next period, up to a maximum of 48 hours.
@@ -32,8 +34,6 @@ The outputs are:
 - Your predicted energy usage and costs. The energy usage, if electric, can also be connected into Predbat to help you project your home battery usage.
 
 Future versions will also offer Predbat to run in master mode, controlling your homes heating in the same way as a smart thermostat (e.g. Nest)
-
-![image](https://github.com/springfall2008/predheat/assets/48591903/76715c96-5f84-41ed-ae90-ea2e893818ae)
 
 
 ## Installation guide
