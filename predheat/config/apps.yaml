@@ -76,7 +76,7 @@ pred_heat:
 
   # Current flow temperature setting
   flow_temp: number.boiler_heatingtemp
-  float_difference_target: 40
+  flow_difference_target: 20
 
   # Energy rates
   metric_octopus_import: 're:(sensor.(octopus_energy_|)gas_[0-9a-z]+_[0-9a-z]+_current_rate)'
