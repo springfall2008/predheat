@@ -37,7 +37,9 @@ Future versions will also offer Predbat to run in master mode, controlling your 
 
 1. Install AppDaemon if you haven't already  - [AppDaemon install](#appdaemon-install)
 3. Install HACS if you haven't already - [HACS install](#hacs-install)
-4. Install Predheat using HACS - [Predheat install](#predheat-install)
+4. Install Apex Charts - [Apex Charts install](#apex-charts-install)
+5. Install Openweather - [Openweather install](#openweather-install)
+6. Install Predheat using HACS - [Predheat install](#predheat-install)
 
 ## Install
 
@@ -64,6 +66,10 @@ See: https://www.home-assistant.io/integrations/openweathermap
 First create an OpenWeather account and then register for a "One Call by Call" subscription plan. This does need a credit/debit card but won't cost anything. You get 1000 API calls a day for free, so edit your limit in the account to 1000 to avoid ever being charged.
 
 Then add in the Home Assistant service and connect up your API key to obtain hourly weather data.
+
+### Apex Charts install
+
+Use HACS to install Apex Charts (Lovelace frontend add-on) - https://github.com/RomRider/apexcharts-card
 
 ### Predheat install
 
@@ -137,7 +143,7 @@ _Note in future versions of Predheat I might make this calculation automatic._
 
 Next we need to work out the number of watts of heat loss in the house, this can be done by looking at the energy consumed when the heating comes on. Pick a period of heating, ideally from the time the temperature starts increasing for a complete hour of increase, looking at the increase in temperature in degrees, add to that static heat loss which is  heat_loss_degrees * (internal temp - external temp) * 1 hours to get the total degrees accounted for. Now divide that by the external temperature difference again / (internal_temp - external_temp) and multiply the final figure by the energy your system consumed in Watts during that period (can be found either from your sensor or just by looking at your energy bill for the same 1 hour period).
 
-The final figure should be the number of watts your house loses per 1 degree of external temperature difference and be set to **heat_loss_watts*
+The final figure should be the number of watts your house loses per 1 degree of external temperature difference and be set to **heat_loss_watts**
 
 Then you can set **heat_gain_static** to be the static heat output of other things in your house eg. computers and people. You can figure this out by looking at how many degrees of temperature difference your house can maintain without any heating and multiply up your heat loss watts figure by this.
 
