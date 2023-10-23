@@ -150,10 +150,32 @@ The final figure should be the number of watts your house loses per 1 degree of 
 
 Then you can set **heat_gain_static** to be the static heat output of other things in your house eg. computers and people. You can figure this out by looking at how many degrees of temperature difference your house can maintain without any heating and multiply up your heat loss watts figure by this.
 
+### Octopus energy
 
+The following are entity names in the Octopus Energy plugin.
+They are set to a regular expression and auto-discovered but you can comment out to disable or set them manually.
+  - **metric_octopus_import** - Import rates from the Octopus plugin
 
+### Standing charge
 
+Predbat also include the daily standing charge in cost predictions (optional)
 
+  - **metric_standing_charge** - Set to the standing charge in pounds e.g. 0.50 is 50p. Can be typed in directly or point to a sensor that stores this information (e.g. Octopus Plugin).
+    
+### Manual energy rates
 
+Can you manuall set your energy rates in a 24-hour period using these:
 
+```
+rates_import:
+  - start : "HH:MM:SS"
+    end : "HH:MM:SS"
+    rate : pence
+rates_export:
+  - start : "HH:MM:SS"
+    end : "HH:MM:SS"
+    rate : p
+```
+
+start and end are in time format of "HH:MM:SS" e.g. "12:30:00" and should be aligned to 30 minute slots normally. rate is in pence e.g. 4.
 
