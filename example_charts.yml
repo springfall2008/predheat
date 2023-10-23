@@ -168,10 +168,6 @@ yaxis:
   - min: 0
     max: 40
 series:
-  - entity: sensor.a480041c72_temperature
-    name: lr_temp
-    curve: stepline
-    stroke_width: 1
   - entity: predheat.internal_temp_h1
     stroke_width: 1
     curve: stepline
