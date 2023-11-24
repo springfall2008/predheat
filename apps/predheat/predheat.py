@@ -880,7 +880,72 @@ class PredHeat(hass.Hass):
         self.log("Todays energy import {} kwh cost {} p".format(self.dp2(day_energy), self.dp2(day_cost), self.dp2(day_cost_import)))
         return day_cost
 
+    def fetch_octopus_rates(self, entity_id, adjust_key=None):
+        data_all = []
+        rate_data = {}
+
+        if entity_id:                
+            # From 9.0.0 of the Octopus plugin the data is split between previous rate, current rate and next rate
+            # and the sensor is replaced with an event - try to support the old settings and find the new events
+
+            # Previous rates
+            if '_current_rate' in entity_id:
+                # Try as event
+                prev_rate_id = entity_id.replace('_current_rate', '_previous_day_rates').replace('sensor.', 'event.')
+                data_import = self.get_state(entity_id=prev_rate_id, attribute="rates")
+                if data_import:
+                    data_all += data_import
+                else:
+                    prev_rate_id = entity_id.replace('_current_rate', '_previous_rate')
+                    data_import = self.get_state(entity_id=prev_rate_id, attribute="all_rates")
+                    if data_import:
+                        data_all += data_import
+
+            # Current rates
+            current_rate_id = entity_id.replace('_current_rate', '_current_day_rates').replace('sensor.', 'event.')
+            data_import = self.get_state(entity_id=current_rate_id, attribute="rates")
+            if data_import:
+                data_all += data_import
+            else:
+                data_import = self.get_state(entity_id=entity_id, attribute="all_rates")
+                if data_import:
+                    data_all += data_import
+
+            # Next rates
+            if '_current_rate' in entity_id:
+                next_rate_id = entity_id.replace('_current_rate', '_next_day_rates').replace('sensor.', 'event.')
+                data_import = self.get_state(entity_id=next_rate_id, attribute="rates")
+                if data_import:
+                    data_all += data_import
+                else:
+                    next_rate_id = entity_id.replace('_current_rate', '_next_rate')
+                    data_import = self.get_state(entity_id=next_rate_id, attribute="all_rates")
+                    if data_import:
+                        data_all += data_import
+
+        if data_all:
+            rate_key = "rate"
+            from_key = "from"
+            to_key = "to"
+            scale = 1.0
+            if rate_key not in data_all[0]:
+                rate_key = "value_inc_vat"
+                from_key = "valid_from"
+                to_key = "valid_to"
+            if from_key not in data_all[0]:
+                from_key = "start"
+                to_key = "end"
+                scale = 100.0
+            rate_data = self.minute_data(
+                data_all, self.forecast_days + 1, self.midnight_utc, rate_key, from_key, backwards=False, to_key=to_key, adjust_key=adjust_key, scale=scale
+            )
+
+        return rate_data
+
     def update_pred(self, scheduled):
+        """
+        Update the heat prediction 
+        """
         self.had_errors = False
 
         local_tz = pytz.timezone(self.get_arg('timezone', "Europe/London"))
@@ -932,36 +997,21 @@ class PredHeat(hass.Hass):
         self.get_weather_data(now_utc)
         status = 'idle'
 
-        if 'metric_octopus_import' in self.args:
+        if "rates_import_octopus_url" in self.args:
+            # Fixed URL for rate import
+            self.log("Downloading import rates directly from url {}".format(self.get_arg("rates_import_octopus_url", indirect=False)))
+            self.rate_import = self.download_octopus_rates(self.get_arg("rates_import_octopus_url", indirect=False))
+        elif "metric_octopus_import" in self.args:
             # Octopus import rates
-            entity_id = self.get_arg('metric_octopus_import', None, indirect=False)
-            data_all = []
-            
-            if entity_id:
-                data_import = self.get_state(entity_id = entity_id, attribute='rates')
-                if data_import:
-                    data_all += data_import
-                else:
-                    data_import = self.get_state(entity_id = entity_id, attribute='all_rates')
-                    if data_import:
-                        data_all += data_import
-
-            if data_all:
-                rate_key = 'rate'
-                from_key = 'from'
-                to_key = 'to'
-                if rate_key not in data_all[0]:
-                    rate_key = 'value_inc_vat'
-                    from_key = 'valid_from'
-                    to_key = 'valid_to'
-                self.rate_import = self.minute_data(data_all, self.forecast_days + 1, self.midnight_utc, rate_key, from_key, backwards=False, to_key=to_key, adjust_key='is_intelligent_adjusted')
-            else:
-                self.log("Warning: metric_octopus_import is not set correctly, ignoring..")
-                self.record_status(message="Error - metric_octopus_import not set correctly", had_errors=True)
+            entity_id = self.get_arg("metric_octopus_import", None, indirect=False)
+            self.rate_import = self.fetch_octopus_rates(entity_id, adjust_key="is_intelligent_adjusted")             
+            if not self.rate_import:
+                self.log("Error: metric_octopus_import is not set correctly or no energy rates can be read")
+                self.record_status(message="Error - metric_octopus_import not set correctly or no energy rates can be read", had_errors=True)
                 raise ValueError
         else:
             # Basic rates defined by user over time
-            self.rate_import = self.basic_rates(self.get_arg('rates_import', [], indirect=False), 'import')
+            self.rate_import = self.basic_rates(self.get_arg("rates_import", [], indirect=False), "import")
 
         # Standing charge
         self.metric_standing_charge = self.get_arg('metric_standing_charge', 0.0) * 100.0
