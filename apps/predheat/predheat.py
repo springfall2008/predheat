@@ -260,6 +260,7 @@ class PredHeat(hass.Hass):
         self.prefix = self.args.get('prefix', "predheat")
         self.days_previous = [7]
         self.days_previous_weight = [1]
+        self.octopus_url_cache = {}
 
     def record_status(self, message, debug="", had_errors = False):
         """
@@ -941,6 +942,73 @@ class PredHeat(hass.Hass):
             )
 
         return rate_data
+
+    def download_octopus_rates(self, url):
+        """
+        Download octopus rates directly from a URL or return from cache if recent
+        Retry 3 times and then throw error
+        """
+
+        # Check the cache first
+        now = datetime.now()
+        if url in self.octopus_url_cache:
+            stamp = self.octopus_url_cache[url]["stamp"]
+            pdata = self.octopus_url_cache[url]["data"]
+            age = now - stamp
+            if age.seconds < (30 * 60):
+                self.log("Return cached octopus data for {} age {} minutes".format(url, age.seconds / 60))
+                return pdata
+
+        # Retry up to 3 minutes
+        for retry in range(0, 3):
+            pdata = self.download_octopus_rates_func(url)
+            if pdata:
+                break
+
+        # Download failed?
+        if not pdata:
+            self.log("WARN: Unable to download Octopus data from URL {}".format(url))
+            self.record_status("Warn - Unable to download Octopus data from cloud", debug=url, had_errors=True)
+            if url in self.octopus_url_cache:
+                pdata = self.octopus_url_cache[url]["data"]
+                return pdata
+            else:
+                raise ValueError
+
+        # Cache New Octopus data
+        self.octopus_url_cache[url] = {}
+        self.octopus_url_cache[url]["stamp"] = now
+        self.octopus_url_cache[url]["data"] = pdata
+        return pdata
+
+    def download_octopus_rates_func(self, url):
+        """
+        Download octopus rates directly from a URL
+        """
+        mdata = []
+
+        pages = 0
+
+        while url and pages < 3:
+            if self.debug_enable:
+                self.log("Download {}".format(url))
+            r = requests.get(url)
+            try:
+                data = r.json()
+            except requests.exceptions.JSONDecodeError:
+                self.log("WARN: Error downloading Octopus data from url {}".format(url))
+                self.record_status("Warn - Error downloading Octopus data from cloud", debug=url, had_errors=True)
+                return {}
+            if "results" in data:
+                mdata += data["results"]
+            else:
+                self.log("WARN: Error downloading Octopus data from url {}".format(url))
+                self.record_status("Warn - Error downloading Octopus data from cloud", debug=url, had_errors=True)
+                return {}
+            url = data.get("next", None)
+            pages += 1
+        pdata = self.minute_data(mdata, self.forecast_days + 1, self.midnight_utc, "value_inc_vat", "valid_from", backwards=False, to_key="valid_to")
+        return pdata
 
     def update_pred(self, scheduled):
         """
