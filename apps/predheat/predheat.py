@@ -640,7 +640,7 @@ class PredHeat(hass.Hass):
                 next_adjust = adjustment_points[adjust_ptr]
             if next_adjust and minute > adjust['end']:
                 adjust_ptr += 1
-                if adjust_ptr >= len(adjust):
+                if adjust_ptr >= len(adjustment_points):
                     adjust_ptr = -1
                     next_adjust = None
                 else:
