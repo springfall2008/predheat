@@ -1,6 +1,8 @@
 # predheat
 Home heating prediction for Home Assistant
 
+**** OLD --- NOW INTEGRATED INTO PREDBAT https://github.com/springfall2008/batpred ****
+
 Predheat attemps to model water based central heating systems based on a boiler or a heat pump.
 
 ```
